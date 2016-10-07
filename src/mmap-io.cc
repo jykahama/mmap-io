@@ -10,6 +10,7 @@
 #include <nan.h>
 #include <errno.h>
 #include <string>
+#include <iostream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -34,16 +35,26 @@ using namespace v8;
 // Since casting `size` to `void*` feels a little "out there" considering that void* may be
 // 32b or 64b (or, I dunno, 47b on some quant particle system), we throw this struct in..
 struct MMap {
-    MMap(char* data, size_t size) : data(data), size(size) {}
-    char*   data = nullptr;
+#ifdef _WIN32
+    MMap(char* data, size_t size, HANDLE fm) : data(data), size(size), filemap(fm) {}
+#endif
+	MMap(char* data, size_t size) : data(data), size(size) {}
+	char*   data = nullptr;
     size_t  size = 0;
+#ifdef _WIN32
+	HANDLE	filemap = INVALID_HANDLE_VALUE;
+#endif
 };
 
 
 void do_mmap_cleanup(char* data, void* hint) {
             auto map_info = static_cast<MMap*>(hint);
-            munmap(data, map_info->size);
-            delete map_info;
+#ifdef _WIN32
+			munmap(data, map_info->size, map_info->filemap);
+#else
+			munmap(data, map_info->size);
+#endif
+			delete map_info;
 }
 
 inline int do_mmap_advice(char* addr, size_t length, int advise) {
@@ -53,7 +64,7 @@ inline int do_mmap_advice(char* addr, size_t length, int advise) {
 JS_FN(mmap_map) {
             Nan::HandleScope();
 
-            if (info.Length() < 4 && info.Length() > 6) {
+            if (info.Length() < 4 && info.Length() > 7) {
                 return Nan::ThrowError(
                     "map() takes 4, 5 or 6 arguments: (size :int, protection :int, flags :int, fd :int [, offset :int [, advise :int]])."
                 );
@@ -74,7 +85,16 @@ JS_FN(mmap_map) {
             const off_t     offset          = info[4]->ToInteger()->Value();   // ToInt64()->Value();
             const int       advise          = info[5]->ToInteger()->Value();
 
-            char* data = static_cast<char*>( mmap( hinted_address, size, protection, flags, fd, offset) );
+#ifdef _WIN32
+			v8::String::Utf8Value str(info[6]->ToString());
+			const char*           share_name = (const char*)(*str);
+
+            std::cout << "sharename is " << share_name << std::endl << std::flush;
+			HANDLE fm;
+            char* data = static_cast<char*>( mmap( hinted_address, size, protection, flags, fd, offset, share_name, &fm) );
+#else
+			char* data = static_cast<char*>(mmap(hinted_address, size, protection, flags, fd, offset));
+#endif
 
             if (data == MAP_FAILED) {
                 return Nan::ThrowError((std::string("mmap failed, ") + std::to_string(errno)).c_str());
@@ -102,8 +122,12 @@ JS_FN(mmap_map) {
 
                 }
 
-                auto map_info = new MMap(data, size);
-                Nan::MaybeLocal<Object> buf = Nan::NewBuffer(data, size, do_mmap_cleanup, static_cast<void*>(map_info));
+#ifdef _WIN32
+                auto map_info = new MMap(data, size, fm);
+#else
+				auto map_info = new MMap(data, size);
+#endif
+				Nan::MaybeLocal<Object> buf = Nan::NewBuffer(data, size, do_mmap_cleanup, static_cast<void*>(map_info));
                 if (buf.IsEmpty()) {
                     return Nan::ThrowError(std::string("couldn't allocate Node Buffer()").c_str());
                 } else {
@@ -149,6 +173,9 @@ JS_FN(mmap_advise) {
 JS_FN(mmap_incore) {
             Nan::HandleScope();
 
+#ifdef _WIN32
+			return Nan::ThrowError("mincore not supported in windows!");
+#endif
             if (info.Length() != 1) {
                 return Nan::ThrowError(
                     "incore() takes 1 argument: (buffer :Buffer) ."
@@ -182,7 +209,12 @@ JS_FN(mmap_incore) {
               pages++;
             }
 
+#ifdef _WIN32
+			int ret = -1;
+			errno = ENOSYS;
+#else
             int ret = mincore(data, size, resultData);
+#endif
 
             if (ret) {
                 free(resultData);

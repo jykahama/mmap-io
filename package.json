@@ -19,7 +19,7 @@
     },
 
     "scripts": {
-        "prepublish":   "make ls",
+        "prepublish":   "node node_modules/LiveScript/bin/lsc -b -c src/test.ls -o ./ && node node_modules/LiveScript/bin/lsc -b -c src/mmap-io.ls -o ./",
         "install":      "node-gyp configure && node-gyp rebuild",
         "test":         "node ./test.js"
     },
